@@ -19,18 +19,23 @@
       -webkit-user-select: none;
       -webkit-touch-callout: none;
       overscroll-behavior: none;
+      touch-action: manipulation;
+      padding: 12px;
+      box-sizing: border-box;
     }
-    .wrap{ width: min(1100px, 96vw); }
+    .wrap{ 
+      width: min(1100px, 96vw);
+      max-width: 100%;
+    }
     .stage{
       position: relative;
       width: 100%;
-      /* prevent selection/scroll gestures when interacting with stage */
       touch-action: none;
     }
     canvas{
       width: 100%;
       height: auto;
-      max-height: 82vh;
+      max-height: min(70vh, 600px);
       display:block;
       margin: 0 auto;
       background:#000;
@@ -47,6 +52,8 @@
       opacity: .85;
       line-height: 1.35;
       color: rgba(255,255,255,.85);
+      text-align: center;
+      padding: 0 8px;
     }
     .hint kbd{
       padding: 1px 6px;
@@ -57,48 +64,124 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 12px;
     }
-    .hint .row{ display:flex; gap:14px; flex-wrap:wrap; }
+    .hint .row{ 
+      display:flex; 
+      gap:10px; 
+      flex-wrap:wrap;
+      justify-content: center;
+      margin-bottom: 6px;
+    }
 
-    /* Touch UI overlay */
+    /* Touch UI overlay - FIXED: Smaller and properly positioned */
     .touch-ui{
       position:absolute;
       inset:0;
-      pointer-events:none; /* let canvas receive events except on buttons */
+      pointer-events:none;
     }
     .touch-ui .btn{
       pointer-events:auto;
       position:absolute;
-      bottom: 10px;
-      width: min(38vw, 170px);
-      height: 64px;
-      border-radius: 16px;
-      border: 1px solid rgba(255,255,255,.25);
-      background: rgba(0,0,0,.35);
-      color: rgba(255,255,255,.92);
+      bottom: 20px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      border: 2px solid rgba(255,255,255,.3);
+      background: rgba(0,0,0,.6);
+      color: rgba(255,255,255,.95);
       font-weight: 700;
+      font-size: 10px;
       letter-spacing: .5px;
-      backdrop-filter: blur(6px);
-      -webkit-backdrop-filter: blur(6px);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
       touch-action: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,.4);
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      transition: transform 0.1s, background 0.1s;
     }
     .touch-ui .btn:active{
-      transform: translateY(1px);
-      background: rgba(255,255,255,.10);
+      transform: scale(0.92);
+      background: rgba(255,255,255,.15);
     }
     .touch-ui .btn small{
       display:block;
       font-weight: 600;
-      opacity: .85;
-      margin-top: 3px;
+      opacity: .9;
+      margin-top: 1px;
+      font-size: 9px;
     }
-    .touch-ui .duck{ left: 10px; }
-    .touch-ui .jump{ right: 10px; }
+    .touch-ui .duck{ left: 20px; }
+    .touch-ui .jump{ right: 20px; }
+    
+    /* Mobile Restart Button - Only shows on mobile and when game over */
+    .touch-ui .restart-btn {
+      display: none;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 70px;
+      height: 40px;
+      border-radius: 10px;
+      background: rgba(255, 100, 100, 0.8);
+      border-color: rgba(255, 200, 200, 0.4);
+      font-size: 11px;
+      bottom: 90px;
+      border-radius: 20px;
+    }
+    
+    .touch-ui .restart-btn.show {
+      display: flex;
+    }
 
     /* Hidden by default; only show on touch-first/coarse-pointer setups */
     .touch-ui{ display:none; }
     @media (any-pointer: coarse) and (hover: none) {
       .touch-ui{ display:block; }
       .hint{ opacity: .95; }
+      /* Adjust canvas height to leave room for buttons */
+      canvas {
+        max-height: min(65vh, 550px);
+      }
+    }
+    
+    /* Landscape mobile adjustments */
+    @media (max-height: 500px) and (orientation: landscape) {
+      canvas {
+        max-height: 80vh;
+      }
+      .touch-ui .btn {
+        width: 50px;
+        height: 50px;
+        bottom: 15px;
+      }
+      .touch-ui .duck { left: 15px; }
+      .touch-ui .jump { right: 15px; }
+      .touch-ui .restart-btn {
+        bottom: 75px;
+        width: 60px;
+        height: 35px;
+      }
+    }
+    
+    /* Very small screens */
+    @media (max-width: 350px) {
+      .touch-ui .btn {
+        width: 55px;
+        height: 55px;
+        bottom: 15px;
+      }
+      .touch-ui .duck { left: 12px; }
+      .touch-ui .jump { right: 12px; }
+      .hint .row {
+        gap: 6px;
+      }
+      .hint kbd {
+        font-size: 10px;
+        padding: 1px 4px;
+      }
     }
   </style>
 </head>
@@ -118,6 +201,9 @@
           JUMP
           <small>tap</small>
         </button>
+        <button class="btn restart-btn" id="btnRestart" type="button">
+          RESTART
+        </button>
       </div>
     </div>
 
@@ -132,6 +218,7 @@
         <div><kbd>M</kbd> mute</div>
       </div>
       <div>Mobile: Use on-screen buttons. Tip: Near-miss boosts combo. Fossils give bonus.</div>
+      <div><small>Tap screen to restart after Game Over</small></div>
     </div>
   </div>
 
@@ -196,7 +283,7 @@
   function resizeToFit() {
     const wrap = canvas.parentElement;
     const maxW = Math.max(240, (wrap?.clientWidth || window.innerWidth) | 0);
-    const maxH = Math.max(240, (window.innerHeight * 0.82) | 0);
+    const maxH = Math.max(240, (window.innerHeight * 0.7) | 0);
 
     const scale = Math.max(1, Math.floor(Math.min(maxW / GAME_W, maxH / GAME_H)));
     const cssW = GAME_W * scale;
@@ -314,7 +401,7 @@
   }
 
   // -----------------------------
-  // Biomes (richer “handheld” color)
+  // Biomes (richer "handheld" color)
   // -----------------------------
   const BIOMES = [
     { key:'DESERT', name:'Desert', bg1:'#1a1020', bg2:'#6a2c2c', fg:'#fff2d9', ground1:'#d8c59a', ground2:'#b79a6a', accent:'#ffcf66', cactus:'#7bdc7b' },
@@ -649,6 +736,8 @@
       running=true; paused=false; gameOver=false;
       uiIntroT=0;
       if (audioCtx && audioCtx.state==="suspended") audioCtx.resume();
+      // Hide mobile restart button when starting new game
+      btnRestart.classList.remove('show');
     }
   }
 
@@ -675,6 +764,8 @@
     skinToastT=0;
     touchDuckHeld = false;
     resetPlayer();
+    // Hide mobile restart button
+    btnRestart.classList.remove('show');
     render(0);
   }
 
@@ -694,22 +785,29 @@
   },{passive:false});
   window.addEventListener("keyup",(e)=>keys.delete(e.code),{passive:true});
 
-  // Tap/click canvas = jump
-  canvas.addEventListener("pointerdown",(e)=>{
+  // -----------------------------
+  // MOBILE FIX: Tap canvas = jump OR restart if game over
+  // -----------------------------
+  function handleCanvasTap(e) {
     e.preventDefault();
-    jump();
-  },{passive:false});
+    if (gameOver) {
+      restart();
+    } else {
+      jump();
+    }
+  }
 
-  // iOS fallback: prevent default on touchstart to avoid double-tap zoom/scroll quirks
-  canvas.addEventListener("touchstart",(e)=>{ e.preventDefault(); },{passive:false});
+  canvas.addEventListener("pointerdown", handleCanvasTap, {passive:false});
+  canvas.addEventListener("touchstart", handleCanvasTap, {passive:false});
 
   window.addEventListener("blur",()=>{ if(running&&!gameOver) paused=true; },{passive:true});
 
   // -----------------------------
-  // On-screen buttons (coarse pointer)
+  // On-screen buttons (coarse pointer) - FIXED: Better positioning
   // -----------------------------
   const btnJump = document.getElementById("btnJump");
   const btnDuck = document.getElementById("btnDuck");
+  const btnRestart = document.getElementById("btnRestart");
 
   function bindHoldButton(el, onDown, onUp) {
     const down = (e) => { e.preventDefault(); onDown(); };
@@ -727,6 +825,12 @@
 
   bindHoldButton(btnJump, () => { jump(); }, () => {});
   bindHoldButton(btnDuck, () => { touchDuckHeld = true; startIfNeeded(); }, () => { touchDuckHeld = false; });
+  
+  // MOBILE FIX: Restart button for mobile
+  btnRestart.addEventListener("click", (e) => {
+    e.preventDefault();
+    restart();
+  });
 
   // -----------------------------
   // Update loop (fixed timestep)
@@ -743,6 +847,11 @@
     uiIntroT = clamp(uiIntroT + dt*1.7, 0, 1);
     if(scorePopT>0) scorePopT=Math.max(0, scorePopT-dt);
     if(skinToastT>0) skinToastT=Math.max(0, skinToastT-dt);
+
+    // MOBILE FIX: Show restart button when game over on mobile
+    if (gameOver && window.matchMedia('(any-pointer: coarse) and (hover: none)').matches) {
+      btnRestart.classList.add('show');
+    }
 
     // duck input (keyboard OR touch button)
     const duckWanted = isDown("ArrowDown") || isDown("KeyS") || touchDuckHeld;
@@ -1131,7 +1240,7 @@
       ctx.fillRect(0,0,W,H);
       ctx.globalAlpha = 1;
       drawText(((W - measureTextPx("GAME OVER", 3, 1))/2)|0, (H/2-14)|0, "GAME OVER", pal.fg, 3, 1);
-      drawText(((W - measureTextPx("R TO RESTART",2,1))/2)|0, (H/2+10)|0, "R TO RESTART", pal.accent, 2, 1);
+      drawText(((W - measureTextPx("TAP TO RESTART",2,1))/2)|0, (H/2+10)|0, "TAP TO RESTART", pal.accent, 2, 1);
     }
 
     // vignette
@@ -1184,4 +1293,3 @@
 </script>
 </body>
 </html>
-
