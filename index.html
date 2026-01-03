@@ -1,0 +1,1187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"
+  />
+  <title>Dino Offline Remaster GBA-HD (Responsive + Touch UI)</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; margin: 0; }
+    body{
+      display: grid;
+      place-items: center;
+      background: #0b0b0f;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      overscroll-behavior: none;
+    }
+    .wrap{ width: min(1100px, 96vw); }
+    .stage{
+      position: relative;
+      width: 100%;
+      /* prevent selection/scroll gestures when interacting with stage */
+      touch-action: none;
+    }
+    canvas{
+      width: 100%;
+      height: auto;
+      max-height: 82vh;
+      display:block;
+      margin: 0 auto;
+      background:#000;
+      border-radius:14px;
+      border:1px solid rgba(255,255,255,.12);
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      touch-action: none;
+    }
+
+    .hint{
+      margin-top: 10px;
+      font-size: 13px;
+      opacity: .85;
+      line-height: 1.35;
+      color: rgba(255,255,255,.85);
+    }
+    .hint kbd{
+      padding: 1px 6px;
+      border: 1px solid rgba(255,255,255,.25);
+      border-bottom-width: 2px;
+      border-radius: 6px;
+      background: rgba(0,0,0,.35);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+    }
+    .hint .row{ display:flex; gap:14px; flex-wrap:wrap; }
+
+    /* Touch UI overlay */
+    .touch-ui{
+      position:absolute;
+      inset:0;
+      pointer-events:none; /* let canvas receive events except on buttons */
+    }
+    .touch-ui .btn{
+      pointer-events:auto;
+      position:absolute;
+      bottom: 10px;
+      width: min(38vw, 170px);
+      height: 64px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,.25);
+      background: rgba(0,0,0,.35);
+      color: rgba(255,255,255,.92);
+      font-weight: 700;
+      letter-spacing: .5px;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      touch-action: none;
+    }
+    .touch-ui .btn:active{
+      transform: translateY(1px);
+      background: rgba(255,255,255,.10);
+    }
+    .touch-ui .btn small{
+      display:block;
+      font-weight: 600;
+      opacity: .85;
+      margin-top: 3px;
+    }
+    .touch-ui .duck{ left: 10px; }
+    .touch-ui .jump{ right: 10px; }
+
+    /* Hidden by default; only show on touch-first/coarse-pointer setups */
+    .touch-ui{ display:none; }
+    @media (any-pointer: coarse) and (hover: none) {
+      .touch-ui{ display:block; }
+      .hint{ opacity: .95; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="stage">
+      <!-- Visible canvas (responsive) -->
+      <canvas id="game" aria-label="Dino Offline Remaster GBA-HD"></canvas>
+
+      <!-- On-screen controls (auto-hidden on desktop) -->
+      <div class="touch-ui" id="touchUI" aria-hidden="true">
+        <button class="btn duck" id="btnDuck" type="button">
+          DUCK
+          <small>hold</small>
+        </button>
+        <button class="btn jump" id="btnJump" type="button">
+          JUMP
+          <small>tap</small>
+        </button>
+      </div>
+    </div>
+
+    <div class="hint">
+      <div class="row">
+        <div><kbd>Space</kbd>/<kbd>↑</kbd> jump</div>
+        <div><kbd>↓</kbd> duck / fast-fall</div>
+        <div><kbd>K</kbd> skin (Shift+K prev)</div>
+        <div><kbd>R</kbd> restart</div>
+        <div><kbd>P</kbd> pause</div>
+        <div><kbd>O</kbd> options</div>
+        <div><kbd>M</kbd> mute</div>
+      </div>
+      <div>Mobile: Use on-screen buttons. Tip: Near-miss boosts combo. Fossils give bonus.</div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  // -----------------------------
+  // Helpers
+  // -----------------------------
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const randi = (a, b) => (a + Math.random() * (b - a + 1)) | 0;
+  const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+  const smooth01 = (t) => t * t * (3 - 2 * t);
+  const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
+  function hexToRgb(hex) {
+    const h = hex.replace('#','').trim();
+    const v = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
+    return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 };
+  }
+  function rgbToHex({r,g,b}) {
+    const to2 = (n) => n.toString(16).padStart(2,'0');
+    return `#${to2(r|0)}${to2(g|0)}${to2(b|0)}`;
+  }
+  function lerpColor(a, b, t) {
+    const A = hexToRgb(a), B = hexToRgb(b);
+    return rgbToHex({ r: lerp(A.r, B.r, t), g: lerp(A.g, B.g, t), b: lerp(A.b, B.b, t) });
+  }
+  function rectDistance(a, b) {
+    const ax2 = a.x + a.w, ay2 = a.y + a.h;
+    const bx2 = b.x + b.w, by2 = b.y + b.h;
+    const dx = Math.max(0, Math.max(a.x - bx2, b.x - ax2));
+    const dy = Math.max(0, Math.max(a.y - by2, b.y - ay2));
+    return Math.hypot(dx, dy);
+  }
+  function rectOverlap(a, b) {
+    return (a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y);
+  }
+
+  // -----------------------------
+  // Render pipeline: fixed internal buffer -> responsive visible canvas
+  // -----------------------------
+  const GAME_W = 480;
+  const GAME_H = 160;
+
+  const canvas = document.getElementById("game");
+  const vctx = canvas.getContext("2d", { alpha: false });
+  vctx.imageSmoothingEnabled = false;
+
+  const buffer = document.createElement("canvas");
+  buffer.width = GAME_W;
+  buffer.height = GAME_H;
+  const ctx = buffer.getContext("2d", { alpha: false });
+  ctx.imageSmoothingEnabled = false;
+
+  const W = GAME_W;
+  const H = GAME_H;
+
+  function resizeToFit() {
+    const wrap = canvas.parentElement;
+    const maxW = Math.max(240, (wrap?.clientWidth || window.innerWidth) | 0);
+    const maxH = Math.max(240, (window.innerHeight * 0.82) | 0);
+
+    const scale = Math.max(1, Math.floor(Math.min(maxW / GAME_W, maxH / GAME_H)));
+    const cssW = GAME_W * scale;
+    const cssH = GAME_H * scale;
+
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+
+    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    canvas.width = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+    vctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    vctx.imageSmoothingEnabled = false;
+  }
+  window.addEventListener("resize", resizeToFit, { passive: true });
+  resizeToFit();
+
+  function present() {
+    const cssW = parseInt(canvas.style.width, 10) || GAME_W;
+    const cssH = parseInt(canvas.style.height, 10) || GAME_H;
+
+    vctx.globalAlpha = 1;
+    vctx.globalCompositeOperation = "source-over";
+    vctx.imageSmoothingEnabled = false;
+    vctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // vctx is already in CSS-pixel coordinates due to DPR transform
+    vctx.drawImage(buffer, 0, 0, GAME_W, GAME_H, 0, 0, cssW, cssH);
+  }
+
+  // -----------------------------
+  // Audio
+  // -----------------------------
+  let muted = false;
+  let audioCtx = null;
+  function beep(freq=880, dur=0.06, type='square', gain=0.035) {
+    if (muted) return;
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const t0 = audioCtx.currentTime;
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(gain, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(t0); o.stop(t0 + dur);
+  }
+
+  // -----------------------------
+  // Pixel bitmap font (5x7)
+  // -----------------------------
+  const FONT_5X7 = {
+    "A":["01110","10001","10001","11111","10001","10001","10001"],
+    "B":["11110","10001","10001","11110","10001","10001","11110"],
+    "C":["01111","10000","10000","10000","10000","10000","01111"],
+    "D":["11110","10001","10001","10001","10001","10001","11110"],
+    "E":["11111","10000","10000","11110","10000","10000","11111"],
+    "F":["11111","10000","10000","11110","10000","10000","10000"],
+    "G":["01111","10000","10000","10111","10001","10001","01111"],
+    "H":["10001","10001","10001","11111","10001","10001","10001"],
+    "I":["11111","00100","00100","00100","00100","00100","11111"],
+    "J":["00111","00010","00010","00010","00010","10010","01100"],
+    "K":["10001","10010","10100","11000","10100","10010","10001"],
+    "L":["10000","10000","10000","10000","10000","10000","11111"],
+    "M":["10001","11011","10101","10101","10001","10001","10001"],
+    "N":["10001","11001","10101","10011","10001","10001","10001"],
+    "O":["01110","10001","10001","10001","10001","10001","01110"],
+    "P":["11110","10001","10001","11110","10000","10000","10000"],
+    "Q":["01110","10001","10001","10001","10101","10010","01101"],
+    "R":["11110","10001","10001","11110","10100","10010","10001"],
+    "S":["01111","10000","10000","01110","00001","00001","11110"],
+    "T":["11111","00100","00100","00100","00100","00100","00100"],
+    "U":["10001","10001","10001","10001","10001","10001","01110"],
+    "V":["10001","10001","10001","10001","10001","01010","00100"],
+    "W":["10001","10001","10001","10101","10101","10101","01010"],
+    "X":["10001","10001","01010","00100","01010","10001","10001"],
+    "Y":["10001","10001","01010","00100","00100","00100","00100"],
+    "Z":["11111","00001","00010","00100","01000","10000","11111"],
+    "0":["01110","10001","10011","10101","11001","10001","01110"],
+    "1":["00100","01100","00100","00100","00100","00100","01110"],
+    "2":["01110","10001","00001","00010","00100","01000","11111"],
+    "3":["11110","00001","00001","01110","00001","00001","11110"],
+    "4":["00010","00110","01010","10010","11111","00010","00010"],
+    "5":["11111","10000","10000","11110","00001","00001","11110"],
+    "6":["01110","10000","10000","11110","10001","10001","01110"],
+    "7":["11111","00001","00010","00100","01000","01000","01000"],
+    "8":["01110","10001","10001","01110","10001","10001","01110"],
+    "9":["01110","10001","10001","01111","00001","00001","01110"],
+    ":":["00000","00100","00100","00000","00100","00100","00000"],
+    ".":["00000","00000","00000","00000","00000","00110","00110"],
+    "-":["00000","00000","00000","11111","00000","00000","00000"],
+    " " :["00000","00000","00000","00000","00000","00000","00000"],
+    "?" :["01110","10001","00001","00010","00100","00000","00100"],
+    "!" :["00100","00100","00100","00100","00100","00000","00100"],
+  };
+  function drawText(x, y, text, color, scale=2, spacing=1) {
+    ctx.fillStyle = color;
+    const s = text.toUpperCase();
+    let cx = x|0;
+    for (let i=0;i<s.length;i++) {
+      const ch = s[i];
+      const g = FONT_5X7[ch] || FONT_5X7["?"];
+      for (let row=0; row<7; row++) {
+        const line = g[row];
+        for (let col=0; col<5; col++) {
+          if (line[col] === "1") ctx.fillRect((cx + col*scale)|0, (y + row*scale)|0, scale, scale);
+        }
+      }
+      cx += (5*scale + spacing*scale);
+    }
+  }
+  function measureTextPx(text, scale=2, spacing=1) {
+    return (text.length * (5*scale + spacing*scale))|0;
+  }
+
+  // -----------------------------
+  // Biomes (richer “handheld” color)
+  // -----------------------------
+  const BIOMES = [
+    { key:'DESERT', name:'Desert', bg1:'#1a1020', bg2:'#6a2c2c', fg:'#fff2d9', ground1:'#d8c59a', ground2:'#b79a6a', accent:'#ffcf66', cactus:'#7bdc7b' },
+    { key:'DUSK',   name:'Dusk',   bg1:'#120b2a', bg2:'#6b2f5b', fg:'#ffe8ff', ground1:'#b89ab8', ground2:'#8f6b92', accent:'#ff7bd1', cactus:'#87ffcb' },
+    { key:'NIGHT',  name:'Night',  bg1:'#040818', bg2:'#12305a', fg:'#d6f0ff', ground1:'#6c86bf', ground2:'#445c91', accent:'#7ae7ff', cactus:'#b7ff6a' },
+    { key:'STORM',  name:'Storm',  bg1:'#070c10', bg2:'#22313b', fg:'#eaf6ff', ground1:'#9bb1b7', ground2:'#6e858c', accent:'#7dff7a', cactus:'#a2fffd' },
+  ];
+  function biomeIndexFromScore(score) { return Math.floor(score / 900) % BIOMES.length; }
+
+  let palFrom = { ...BIOMES[0] }, palTo = { ...BIOMES[0] }, palT = 1, pal = { ...BIOMES[0] };
+  function updatePalette(dt, score) {
+    const target = BIOMES[biomeIndexFromScore(score)];
+    if (target.key !== palTo.key) {
+      palFrom = { ...pal };
+      palTo = { ...target };
+      palT = 0;
+      beep(520, 0.05, 'triangle', 0.02);
+    } else palT = clamp(palT + dt * 0.85, 0, 1);
+
+    const t = smooth01(palT);
+    pal = {
+      key: palTo.key, name: palTo.name,
+      bg1: lerpColor(palFrom.bg1, palTo.bg1, t),
+      bg2: lerpColor(palFrom.bg2, palTo.bg2, t),
+      fg: lerpColor(palFrom.fg, palTo.fg, t),
+      ground1: lerpColor(palFrom.ground1, palTo.ground1, t),
+      ground2: lerpColor(palFrom.ground2, palTo.ground2, t),
+      accent: lerpColor(palFrom.accent, palTo.accent, t),
+      cactus: lerpColor(palFrom.cactus, palTo.cactus, t),
+    };
+  }
+
+  // -----------------------------
+  // Skins
+  // -----------------------------
+  const SKINS = [
+    { key:'CLASSIC', name:'Classic', outline:'#1a1a1a', body:'#f8f8f8', shade:'#cfcfcf', accent:'#ff5b5b', hi:'#fff2a6' },
+    { key:'JUNGLE',  name:'Jungle',  outline:'#0b1b12', body:'#40ff8e', shade:'#16b85b', accent:'#ffd166', hi:'#b9ffef' },
+    { key:'LAVA',    name:'Lava',    outline:'#220b0b', body:'#ff4d3d', shade:'#b81d1d', accent:'#ffca3a', hi:'#ffe6b0' },
+    { key:'NEON',    name:'Neon',    outline:'#061317', body:'#46f6ff', shade:'#0aa7c1', accent:'#ff49d7', hi:'#d6fff9' },
+    { key:'ROYAL',   name:'Royal',   outline:'#120a1e', body:'#a78bfa', shade:'#6d28d9', accent:'#ffd700', hi:'#fff2d9' },
+    { key:'CYBER',   name:'Cyber',   outline:'#0c0f16', body:'#b7c6ff', shade:'#6d7dd8', accent:'#4dff88', hi:'#e8f1ff' },
+    { key:'SKELE',   name:'Skele',   outline:'#1b1409', body:'#ffe7b8', shade:'#e0c48a', accent:'#7ae7ff', hi:'#ffffff' },
+  ];
+  const LS_SKIN_KEY = "dino_remaster_skin_v4";
+  const loadSkinIndex = () => {
+    const v = +localStorage.getItem(LS_SKIN_KEY);
+    return Number.isFinite(v) ? clamp(v|0, 0, SKINS.length - 1) : 0;
+  };
+  const saveSkinIndex = (i) => localStorage.setItem(LS_SKIN_KEY, String(i|0));
+
+  let skinIndex = loadSkinIndex();
+  let skinToastT = 0;
+  const skin = () => SKINS[skinIndex];
+  function setSkin(idx) {
+    skinIndex = (idx + SKINS.length) % SKINS.length;
+    saveSkinIndex(skinIndex);
+    skinToastT = 1.25;
+    beep(980, 0.05, 'triangle', 0.03);
+  }
+
+  // -----------------------------
+  // Gameplay tuning (slightly easier)
+  // -----------------------------
+  const FIXED_DT = 1/60;
+  const GROUND_Y = 120;
+
+  const GRAVITY = 1600;
+  const JUMP_V0 = 560;
+  const FAST_FALL_MULT = 1.75;
+
+  const SPEED_START = 165;
+  const SPEED_MAX   = 360;
+  const SPEED_ACC   = 5.4;
+
+  const MIN_GAP_PX = 150;
+  const MAX_GAP_PX = 280;
+
+  const BIRD_CHANCE = 0.24;
+
+  const NEAR_MISS_PX = 11;
+  const NEAR_MISS_BONUS = 22;
+  const COMBO_DECAY_SEC = 2.4;
+
+  const FOSSIL_CHANCE = 0.18;
+  const FOSSIL_BONUS = 55;
+
+  const MAX_PARTICLES = 260;
+
+  // -----------------------------
+  // Sprites (layer-encoded) + palette swap
+  // -----------------------------
+  const L_OUT="#ffffff", L_BODY="#bbbbbb", L_SHADE="#777777", L_ACC="#ff00ff", L_HI="#00ffff";
+
+  const atlas = document.createElement("canvas");
+  atlas.width = 256; atlas.height = 128;
+  const a = atlas.getContext("2d");
+  a.imageSmoothingEnabled = false;
+
+  const SPR = {
+    dinoRun0:{x:0,y:0,w:32,h:24},
+    dinoRun1:{x:32,y:0,w:32,h:24},
+    dinoJump:{x:64,y:0,w:32,h:24},
+    dinoDuck0:{x:96,y:0,w:40,h:18},
+    dinoDuck1:{x:136,y:0,w:40,h:18},
+    cactusS:{x:0,y:32,w:16,h:24},
+    cactusL:{x:16,y:32,w:20,h:34},
+    bird0:{x:64,y:32,w:28,h:16},
+    bird1:{x:92,y:32,w:28,h:16},
+    fossil:{x:140,y:32,w:12,h:12},
+  };
+
+  function pxFill(c,x,y,w,h){ a.fillStyle=c; a.fillRect(x|0,y|0,w|0,h|0); }
+  function pxClear(x,y,w,h){ a.clearRect(x|0,y|0,w|0,h|0); }
+
+  function dinoFrame(x,y,duck=false,leg=0){
+    a.save(); a.translate(x,y);
+    if(!duck){
+      pxFill(L_OUT, 9,7,16,11); pxFill(L_OUT, 17,4,12,9); pxFill(L_OUT, 28,7,3,4);
+      pxFill(L_OUT, 5,10,5,4); pxFill(L_OUT, 3,11,2,3); pxFill(L_OUT, 15,13,3,3);
+      if(leg===0){ pxFill(L_OUT,10,16,5,8); pxFill(L_OUT,18,17,5,7); }
+      else { pxFill(L_OUT,10,17,5,7); pxFill(L_OUT,18,16,5,8); }
+      pxFill(L_OUT,9,22,8,2); pxFill(L_OUT,17,22,8,2);
+
+      pxFill(L_BODY,10,8,14,9); pxFill(L_BODY,18,5,10,8); pxFill(L_BODY,6,11,4,3);
+      pxFill(L_SHADE,11,12,8,5); pxFill(L_SHADE,18,12,6,5);
+      pxFill(L_ACC,21,9,2,2); pxFill(L_ACC,13,10,2,2);
+      pxFill(L_HI, 20,6,1,1); pxFill(L_HI, 12,8,1,1);
+
+      pxClear(25,7,2,2);
+    } else {
+      pxFill(L_OUT, 7,7,22,9); pxFill(L_OUT, 21,5,16,10); pxFill(L_OUT, 34,8,4,4); pxFill(L_OUT, 3,9,5,4);
+      if(leg===0){ pxFill(L_OUT,9,14,9,4); pxFill(L_OUT,22,14,9,4); }
+      else { pxFill(L_OUT,9,14,9,4); pxFill(L_OUT,22,13,9,5); }
+
+      pxFill(L_BODY,8,8,20,7); pxFill(L_BODY,23,6,13,8);
+      pxFill(L_SHADE,12,11,10,4); pxFill(L_SHADE,26,11,8,4);
+      pxFill(L_ACC,27,8,2,2); pxFill(L_ACC,15,9,2,2);
+      pxFill(L_HI, 26,6,1,1);
+
+      pxClear(30,8,2,2);
+    }
+    a.restore();
+  }
+
+  function buildAtlas(){
+    a.clearRect(0,0,atlas.width,atlas.height);
+
+    dinoFrame(SPR.dinoRun0.x, SPR.dinoRun0.y, false, 0);
+    dinoFrame(SPR.dinoRun1.x, SPR.dinoRun1.y, false, 1);
+    dinoFrame(SPR.dinoJump.x, SPR.dinoJump.y, false, 0);
+    dinoFrame(SPR.dinoDuck0.x, SPR.dinoDuck0.y, true, 0);
+    dinoFrame(SPR.dinoDuck1.x, SPR.dinoDuck1.y, true, 1);
+
+    // cactus (outline channel only)
+    (function(){
+      const o = SPR.cactusS; a.save(); a.translate(o.x,o.y);
+      pxFill(L_OUT,6,4,4,20); pxFill(L_OUT,2,10,4,3); pxFill(L_OUT,0,10,2,8);
+      pxFill(L_OUT,10,12,4,3); pxFill(L_OUT,14,12,2,8);
+      a.restore();
+    })();
+    (function(){
+      const o = SPR.cactusL; a.save(); a.translate(o.x,o.y);
+      pxFill(L_OUT,8,6,5,27);
+      pxFill(L_OUT,2,14,6,3); pxFill(L_OUT,2,14,3,10);
+      pxFill(L_OUT,13,18,6,3); pxFill(L_OUT,16,18,3,10);
+      a.restore();
+    })();
+
+    // birds
+    function birdFrame(o, up=true){
+      a.save(); a.translate(o.x,o.y);
+      pxFill(L_OUT,10,7,10,4); pxFill(L_OUT,18,6,6,3);
+      if(up){ pxFill(L_OUT,2,2,8,2); pxFill(L_OUT,20,2,8,2); }
+      else { pxFill(L_OUT,2,12,8,2); pxFill(L_OUT,20,12,8,2); }
+      a.restore();
+    }
+    birdFrame(SPR.bird0,true);
+    birdFrame(SPR.bird1,false);
+
+    // fossil (accent)
+    (function(){
+      const o = SPR.fossil; a.save(); a.translate(o.x,o.y);
+      pxFill(L_ACC,4,1,4,10); pxFill(L_ACC,1,4,10,4); pxFill(L_ACC,3,3,6,6);
+      pxClear(5,5,2,2); a.restore();
+    })();
+  }
+  buildAtlas();
+
+  // Palette swap cache
+  const spriteCache = new Map();
+  const tmp = document.createElement("canvas");
+  const tmpCtx = tmp.getContext("2d", { willReadFrequently: true });
+  tmpCtx.imageSmoothingEnabled = false;
+
+  function getSpriteCanvas(sprite, mode, colorA, colorB, colorC, colorD, colorE){
+    const key = `${mode}:${colorA}:${colorB}:${colorC}:${colorD}:${colorE}:${sprite.x},${sprite.y},${sprite.w},${sprite.h}`;
+    const hit = spriteCache.get(key);
+    if (hit) return hit;
+
+    tmp.width = sprite.w; tmp.height = sprite.h;
+    tmpCtx.clearRect(0,0,tmp.width,tmp.height);
+    tmpCtx.drawImage(atlas, sprite.x, sprite.y, sprite.w, sprite.h, 0, 0, sprite.w, sprite.h);
+
+    const img = tmpCtx.getImageData(0,0,tmp.width,tmp.height);
+    const d = img.data;
+
+    const A = hexToRgb(colorA), B = hexToRgb(colorB), C = hexToRgb(colorC), D = hexToRgb(colorD), E = hexToRgb(colorE);
+
+    for (let i=0;i<d.length;i+=4) {
+      if (d[i+3] === 0) continue;
+      const r=d[i], g=d[i+1], b=d[i+2];
+      if (r===255 && g===255 && b===255) { d[i]=A.r; d[i+1]=A.g; d[i+2]=A.b; }
+      else if (mode==="DINO" && r===187 && g===187 && b===187) { d[i]=B.r; d[i+1]=B.g; d[i+2]=B.b; }
+      else if (mode==="DINO" && r===119 && g===119 && b===119) { d[i]=C.r; d[i+1]=C.g; d[i+2]=C.b; }
+      else if (mode==="DINO" && r===255 && g===0 && b===255) { d[i]=D.r; d[i+1]=D.g; d[i+2]=D.b; }
+      else if (mode==="DINO" && r===0 && g===255 && b===255) { d[i]=E.r; d[i+1]=E.g; d[i+2]=E.b; }
+      else { d[i]=A.r; d[i+1]=A.g; d[i+2]=A.b; }
+    }
+    tmpCtx.putImageData(img,0,0);
+
+    const out = document.createElement("canvas");
+    out.width = sprite.w; out.height = sprite.h;
+    out.getContext("2d").drawImage(tmp,0,0);
+    spriteCache.set(key, out);
+    return out;
+  }
+
+  // -----------------------------
+  // Persistence
+  // -----------------------------
+  const HS_KEY = "dino_offline_remaster_hs_v4";
+  const loadHS = () => +localStorage.getItem(HS_KEY) || 0;
+  const saveHS = (v) => localStorage.setItem(HS_KEY, String(v|0));
+
+  // -----------------------------
+  // State
+  // -----------------------------
+  let running=false, paused=false, gameOver=false;
+  let speed=SPEED_START, distancePx=0, scoreBonus=0;
+  let hiScore=loadHS();
+
+  let combo=0, comboT=0;
+  let skyOff=0, farOff=0, midOff=0, nearOff=0;
+
+  // UI animation
+  let uiIntroT=0, scorePopT=0, lastMilestone=0;
+
+  // FX
+  let shakeT=0, shakeMag=0;
+  const options = { particles:true, shake:true, parallax:true, vignette:true, hitboxes:false };
+  let showOptions=false;
+
+  // Touch UI state (on-screen buttons)
+  let touchDuckHeld = false;
+
+  // Stars
+  const stars = Array.from({length: 70}, () => ({ x: rand(0,W), y: rand(0, 65), s: rand(0.2,1), tw: rand(0, 10) }));
+
+  // Player
+  const player = { x: 46, y: 0, w: 20, h: 22, vy: 0, onGround:true, duck:false, anim:0, frame:0 };
+  function resetPlayer(){ player.vy=0; player.onGround=true; player.duck=false; player.anim=0; player.frame=0; player.h=22; player.w=20; player.y=GROUND_Y-player.h; }
+
+  const obstacles=[], fossils=[], particles=[];
+  const getScore = () => (Math.floor(distancePx/9) + scoreBonus) | 0;
+  const fmtScore = (n,pad=5) => String(Math.max(0,n|0)).padStart(pad,"0").slice(-pad);
+
+  function playerHitbox(){
+    const padX = player.duck ? 3 : 3;
+    const padY = player.duck ? 3 : 4;
+    return { x: player.x+padX, y: player.y+padY, w: player.w-padX*2, h: player.h-padY*2 };
+  }
+
+  // -----------------------------
+  // Spawning (distance based)
+  // -----------------------------
+  let gapPx=randi(MIN_GAP_PX, MAX_GAP_PX), sinceSpawnPx=0;
+
+  function spawnObstacle(){
+    const score=getScore();
+    const allowBird = score > 220 && Math.random() < BIRD_CHANCE;
+
+    if (allowBird) {
+      const alt = pick([GROUND_Y-58, GROUND_Y-46, GROUND_Y-36]);
+      obstacles.push({ kind:"bird", x:W+12, y:alt, w:22, h:12, flap:0, passed:false, minDist:999 });
+      return;
+    }
+    const big = Math.random() < 0.42;
+    const o = big
+      ? { kind:"cactusL", x:W+12, y:GROUND_Y-34, w:16, h:30, passed:false, minDist:999 }
+      : { kind:"cactusS", x:W+12, y:GROUND_Y-24, w:12, h:20, passed:false, minDist:999 };
+    if (!big && Math.random()<0.22 && score>150) { o.cluster=true; o.w=22; }
+    obstacles.push(o);
+  }
+
+  function spawnFossilMaybe(){
+    if (Math.random() > FOSSIL_CHANCE) return;
+    const lane = pick(["low","mid","high"]);
+    let y = (lane==="low") ? (GROUND_Y-18) : (lane==="mid") ? (GROUND_Y-38) : (GROUND_Y-58);
+    fossils.push({ x:W+randi(60,130), y, w:10, h:10, spin:0, taken:false });
+  }
+
+  // -----------------------------
+  // Particles / shake
+  // -----------------------------
+  function addDust(x,y,n=6,str=1){
+    if(!options.particles) return;
+    for(let i=0;i<n && particles.length<MAX_PARTICLES;i++){
+      particles.push({ x:x+rand(-2,2), y:y+rand(-1,1), vx:rand(-22,-6)*str, vy:rand(-32,-10)*str, life:rand(0.22,0.45), t:0, s:rand(1,2.2), kind:"dust" });
+    }
+  }
+  function addSpark(x,y,n=10){
+    if(!options.particles) return;
+    for(let i=0;i<n && particles.length<MAX_PARTICLES;i++){
+      particles.push({ x:x+rand(-1,1), y:y+rand(-1,1), vx:rand(-90,25), vy:rand(-95,-10), life:rand(0.25,0.52), t:0, s:rand(1,2), kind:"spark" });
+    }
+  }
+  function doShake(mag=1,t=0.12){
+    if(!options.shake) return;
+    shakeMag=Math.max(shakeMag,mag);
+    shakeT=Math.max(shakeT,t);
+  }
+
+  // -----------------------------
+  // Input (keyboard + pointer)
+  // -----------------------------
+  const keys=new Set();
+  const isDown=(c)=>keys.has(c);
+
+  function startIfNeeded(){
+    if(!running){
+      running=true; paused=false; gameOver=false;
+      uiIntroT=0;
+      if (audioCtx && audioCtx.state==="suspended") audioCtx.resume();
+    }
+  }
+
+  function jump(){
+    if(gameOver) return;
+    startIfNeeded();
+    if(player.onGround){
+      player.vy = -JUMP_V0;
+      player.onGround=false;
+      beep(700,0.035,'square',0.03);
+    }
+  }
+
+  function restart(){
+    running=false; paused=false; gameOver=false;
+    speed=SPEED_START; distancePx=0; scoreBonus=0;
+    combo=0; comboT=0;
+    skyOff=farOff=midOff=nearOff=0;
+    obstacles.length=0; fossils.length=0; particles.length=0;
+    gapPx=randi(MIN_GAP_PX,MAX_GAP_PX); sinceSpawnPx=0;
+    shakeT=0; shakeMag=0;
+    palFrom={...BIOMES[0]}; palTo={...BIOMES[0]}; pal={...BIOMES[0]}; palT=1;
+    uiIntroT=0; scorePopT=0; lastMilestone=0;
+    skinToastT=0;
+    touchDuckHeld = false;
+    resetPlayer();
+    render(0);
+  }
+
+  function togglePause(){ if(!running||gameOver) return; paused=!paused; }
+
+  window.addEventListener("keydown",(e)=>{
+    const k=e.code;
+    if(["Space","ArrowUp","ArrowDown","KeyW","KeyS","KeyR","KeyP","KeyO","KeyM","KeyH","KeyK"].includes(k)) e.preventDefault();
+    keys.add(k);
+    if(k==="Space"||k==="ArrowUp"||k==="KeyW") jump();
+    if(k==="KeyR") restart();
+    if(k==="KeyP") togglePause();
+    if(k==="KeyO") showOptions=!showOptions;
+    if(k==="KeyM"){ muted=!muted; if(!muted) beep(440,0.03,'square',0.02); }
+    if(k==="KeyH") options.hitboxes=!options.hitboxes;
+    if(k==="KeyK") setSkin(skinIndex + (e.shiftKey?-1:1));
+  },{passive:false});
+  window.addEventListener("keyup",(e)=>keys.delete(e.code),{passive:true});
+
+  // Tap/click canvas = jump
+  canvas.addEventListener("pointerdown",(e)=>{
+    e.preventDefault();
+    jump();
+  },{passive:false});
+
+  // iOS fallback: prevent default on touchstart to avoid double-tap zoom/scroll quirks
+  canvas.addEventListener("touchstart",(e)=>{ e.preventDefault(); },{passive:false});
+
+  window.addEventListener("blur",()=>{ if(running&&!gameOver) paused=true; },{passive:true});
+
+  // -----------------------------
+  // On-screen buttons (coarse pointer)
+  // -----------------------------
+  const btnJump = document.getElementById("btnJump");
+  const btnDuck = document.getElementById("btnDuck");
+
+  function bindHoldButton(el, onDown, onUp) {
+    const down = (e) => { e.preventDefault(); onDown(); };
+    const up = (e) => { e.preventDefault(); onUp(); };
+    el.addEventListener("pointerdown", down, { passive:false });
+    el.addEventListener("pointerup", up, { passive:false });
+    el.addEventListener("pointercancel", up, { passive:false });
+    el.addEventListener("pointerleave", up, { passive:false });
+
+    // touch fallback
+    el.addEventListener("touchstart", down, { passive:false });
+    el.addEventListener("touchend", up, { passive:false });
+    el.addEventListener("touchcancel", up, { passive:false });
+  }
+
+  bindHoldButton(btnJump, () => { jump(); }, () => {});
+  bindHoldButton(btnDuck, () => { touchDuckHeld = true; startIfNeeded(); }, () => { touchDuckHeld = false; });
+
+  // -----------------------------
+  // Update loop (fixed timestep)
+  // -----------------------------
+  function update(dt){
+    if(!running||paused||gameOver) return;
+
+    speed = clamp(speed + SPEED_ACC*dt, SPEED_START, SPEED_MAX);
+    distancePx += speed*dt;
+
+    const score = getScore();
+    updatePalette(dt, score);
+
+    uiIntroT = clamp(uiIntroT + dt*1.7, 0, 1);
+    if(scorePopT>0) scorePopT=Math.max(0, scorePopT-dt);
+    if(skinToastT>0) skinToastT=Math.max(0, skinToastT-dt);
+
+    // duck input (keyboard OR touch button)
+    const duckWanted = isDown("ArrowDown") || isDown("KeyS") || touchDuckHeld;
+    player.duck = duckWanted && player.onGround;
+
+    // resize hitbox on duck
+    if (player.duck) { player.w = 26; player.h = 16; }
+    else { player.w = 20; player.h = 22; }
+    if (player.onGround) player.y = GROUND_Y - player.h;
+
+    // physics
+    const g = (!player.onGround && duckWanted) ? (GRAVITY * FAST_FALL_MULT) : GRAVITY;
+    player.vy += g * dt;
+    player.y += player.vy * dt;
+
+    const groundTop = GROUND_Y - player.h;
+    const wasOnGround = player.onGround;
+    if (player.y >= groundTop) {
+      player.y = groundTop;
+      player.vy = 0;
+      player.onGround = true;
+    } else player.onGround = false;
+
+    if (!wasOnGround && player.onGround) {
+      addDust(player.x + 8, GROUND_Y - 1, 10, 1);
+      doShake(1.2, 0.10);
+      beep(130, 0.03, 'square', 0.02);
+    }
+
+    // animation
+    player.anim += dt;
+    const runRate = lerp(0.14, 0.095, (speed - SPEED_START) / (SPEED_MAX - SPEED_START));
+        if (player.anim > runRate) { player.anim = 0; player.frame ^= 1; }
+
+    // parallax scroll
+    if (options.parallax) {
+      skyOff  = (skyOff  + speed * dt * 0.05) % 1000;
+      farOff  = (farOff  + speed * dt * 0.16) % 1000;
+      midOff  = (midOff  + speed * dt * 0.32) % 1000;
+      nearOff = (nearOff + speed * dt * 0.82) % 1000;
+    } else {
+      nearOff = (nearOff + speed * dt) % 1000;
+    }
+
+    // spawn (distance based)
+    sinceSpawnPx += speed * dt;
+    const minGap = MIN_GAP_PX + (speed - SPEED_START) * 0.09;
+    if (sinceSpawnPx >= gapPx) {
+      const last = obstacles[obstacles.length - 1];
+      if (!last || (W + 12) - last.x > minGap) {
+        spawnObstacle();
+        spawnFossilMaybe();
+        sinceSpawnPx = 0;
+        gapPx = randi(MIN_GAP_PX, MAX_GAP_PX) + ((speed - SPEED_START) * 0.18);
+        gapPx = clamp(gapPx, MIN_GAP_PX, MAX_GAP_PX + 140);
+      }
+    }
+
+    // update obstacles + collisions
+    const hb = playerHitbox();
+    for (const o of obstacles) {
+      o.x -= speed * dt;
+      if (o.kind === "bird") o.flap = (o.flap + dt * 8) % 2;
+
+      const ob = { x:o.x, y:o.y, w:o.w, h:o.h };
+      const dmin = rectDistance(hb, ob);
+      o.minDist = Math.min(o.minDist, dmin);
+
+      if (rectOverlap(hb, ob)) {
+        gameOver = true;
+        paused = false;
+        doShake(3.2, 0.22);
+        addSpark(player.x + player.w, player.y + player.h/2, 18);
+        beep(90, 0.18, 'sawtooth', 0.05);
+
+        const s = getScore();
+        if (s > hiScore) { hiScore = s; saveHS(hiScore); }
+      }
+
+      if (!o.passed && (o.x + o.w) < hb.x) {
+        o.passed = true;
+
+        // near miss bonus
+        if (!gameOver && o.minDist > 0 && o.minDist <= NEAR_MISS_PX) {
+          const mult = 1 + Math.min(6, combo) * 0.18;
+          const award = Math.floor(NEAR_MISS_BONUS * mult);
+          scoreBonus += award;
+          combo = Math.min(30, combo + 1);
+          comboT = 0;
+          addSpark(hb.x + hb.w, hb.y + hb.h/2, 10);
+          beep(980, 0.05, 'triangle', 0.03);
+        }
+      }
+    }
+    while (obstacles.length && (obstacles[0].x + obstacles[0].w < -40)) obstacles.shift();
+
+    // fossils
+    for (const f of fossils) {
+      f.x -= speed * dt;
+      f.spin = (f.spin + dt * 6) % (Math.PI * 2);
+      if (!f.taken) {
+        const fb = { x:f.x, y:f.y, w:f.w, h:f.h };
+        if (rectOverlap(hb, fb)) {
+          f.taken = true;
+          const mult = 1 + Math.min(6, combo) * 0.14;
+          scoreBonus += Math.floor(FOSSIL_BONUS * mult);
+          combo = Math.min(30, combo + 1);
+          comboT = 0;
+          addSpark(f.x, f.y, 12);
+          beep(1200, 0.06, 'square', 0.03);
+        }
+      }
+    }
+    while (fossils.length && (fossils[0].x + fossils[0].w < -30 || fossils[0].taken)) fossils.shift();
+
+    // combo decay
+    comboT += dt;
+    if (combo > 0 && comboT > COMBO_DECAY_SEC) { combo = 0; comboT = 0; }
+
+    // particles
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.t += dt;
+      p.vy = (p.vy ?? 0) + 720 * dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      if (p.t >= p.life || p.y > H + 30) particles.splice(i, 1);
+    }
+
+    // tiny foot dust
+    if (player.onGround && !player.duck && (Math.random() < 0.18)) addDust(player.x + 7, GROUND_Y - 1, 1, 0.65);
+
+    // milestone pop
+    const sc = getScore();
+    const milestone = Math.floor(sc / 100) * 100;
+    if (milestone > 0 && milestone !== lastMilestone && sc % 100 === 0) {
+      lastMilestone = milestone;
+      scorePopT = 0.45;
+      beep(660, 0.04, 'square', 0.02);
+    }
+  }
+
+  // -----------------------------
+  // Rendering
+  // -----------------------------
+  function render(alpha) {
+    // HARD reset render state each frame (prevents composite/glitch carryover)
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
+    ctx.imageSmoothingEnabled = false;
+
+    // screen shake
+    let sx = 0, sy = 0;
+    if (shakeT > 0) {
+      shakeT = Math.max(0, shakeT - FIXED_DT);
+      const k = shakeT / 0.22;
+      sx = (rand(-1, 1) * shakeMag * 1.2) * k;
+      sy = (rand(-1, 1) * shakeMag) * k;
+      if (shakeT === 0) shakeMag = 0;
+    }
+    ctx.translate((sx|0), (sy|0));
+
+    // background bands
+    const bands = 12;
+    for (let i=0;i<bands;i++) {
+      const tt = i/(bands-1);
+      ctx.fillStyle = lerpColor(pal.bg1, pal.bg2, tt);
+      const y = (i*(H/bands))|0;
+      ctx.fillRect(0, y, W, ((H/bands)+1)|0);
+    }
+
+    // subtle scanline/dither
+    ctx.globalAlpha = 0.06;
+    ctx.fillStyle = "#000";
+    for (let y=0;y<H;y+=2) ctx.fillRect((y&2)?1:0, y, W, 1);
+    ctx.globalAlpha = 1;
+
+    // stars + moon
+    if (pal.key === "NIGHT") {
+      ctx.fillStyle = pal.fg;
+      for (const s of stars) {
+        const tw = (Math.sin((performance.now()/1000) + s.tw) * 0.5 + 0.5);
+        ctx.globalAlpha = (0.25 + tw*0.6) * s.s;
+        ctx.fillRect(((s.x + skyOff*0.25) % W)|0, s.y|0, 1, 1);
+      }
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = pal.accent;
+      ctx.fillRect(W-64, 18, 12, 12);
+      ctx.fillStyle = pal.bg2;
+      ctx.fillRect(W-60, 18, 12, 12);
+    }
+
+    // parallax
+    if (options.parallax) {
+      ctx.fillStyle = lerpColor(pal.bg2, pal.fg, 0.10);
+      const off = farOff % 90;
+      for (let x=-90; x<W+90; x+=90) {
+        const px = (x - off)|0;
+        ctx.fillRect(px+12, 74, 30, 12);
+        ctx.fillRect(px+28, 62, 22, 12);
+        ctx.fillRect(px+44, 54, 14, 20);
+      }
+
+      ctx.fillStyle = lerpColor(pal.bg2, pal.ground2, 0.45);
+      const off2 = midOff % 72;
+      for (let x=-72; x<W+72; x+=72) {
+        const px = (x - off2)|0;
+        ctx.fillRect(px+6, 92, 26, 10);
+        ctx.fillRect(px+24, 84, 22, 8);
+        ctx.fillRect(px+36, 76, 12, 16);
+      }
+
+      ctx.fillStyle = lerpColor(pal.fg, pal.bg2, 0.42);
+      ctx.globalAlpha = 0.55;
+      const off3 = skyOff % 100;
+      for (let x=-100; x<W+100; x+=100) {
+        const px = (x - off3)|0;
+        const cy = 22 + (((x/100)|0)%3)*7;
+        ctx.fillRect(px+10, cy, 20, 4);
+        ctx.fillRect(px+18, cy-2, 16, 2);
+        ctx.fillRect(px+26, cy+4, 12, 2);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // ground
+    ctx.fillStyle = pal.ground1;
+    ctx.fillRect(0, GROUND_Y, W, H-GROUND_Y);
+    ctx.fillStyle = pal.ground2;
+    ctx.fillRect(0, GROUND_Y+10, W, H-(GROUND_Y+10));
+
+    ctx.fillStyle = pal.fg;
+    ctx.fillRect(0, GROUND_Y, W, 1);
+
+    // pebbles
+    ctx.fillStyle = lerpColor(pal.ground2, pal.bg2, 0.35);
+    const gOff = (nearOff * 1.35) % 24;
+    for (let x=-24; x<W+24; x+=24) {
+      const px = (x - gOff)|0;
+      ctx.fillRect(px+4,  GROUND_Y+8,  3, 1);
+      ctx.fillRect(px+11, GROUND_Y+14, 2, 1);
+      ctx.fillRect(px+16, GROUND_Y+10, 4, 1);
+    }
+
+    // shadows
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = "#000";
+    for (const o of obstacles) {
+      const shW = (o.kind === "bird") ? 10 : o.w;
+      ctx.fillRect(((o.x + o.w/2 - shW/2)|0), GROUND_Y-1, shW|0, 2);
+    }
+    for (const f of fossils) {
+      ctx.fillRect(((f.x + f.w/2 - 5)|0), GROUND_Y-1, 10, 2);
+    }
+    ctx.globalAlpha = 1;
+
+    // sprites
+    const sk = skin();
+    const dinoColors = { outline: sk.outline, body: sk.body, shade: sk.shade, acc: sk.accent, hi: sk.hi };
+    const cactusTint = pal.cactus;
+    const birdTint = pal.fg;
+
+    // obstacles
+    for (const o of obstacles) {
+      if (o.kind === "cactusS") {
+        const cv = getSpriteCanvas(SPR.cactusS, "TINT", cactusTint, cactusTint, cactusTint, cactusTint, cactusTint);
+        ctx.drawImage(cv, o.x|0, o.y|0);
+        if (o.cluster) ctx.drawImage(cv, (o.x+10)|0, o.y|0);
+      } else if (o.kind === "cactusL") {
+        const cv = getSpriteCanvas(SPR.cactusL, "TINT", cactusTint, cactusTint, cactusTint, cactusTint, cactusTint);
+        ctx.drawImage(cv, o.x|0, (o.y-4)|0);
+      } else {
+        const fr = (o.flap < 1) ? SPR.bird0 : SPR.bird1;
+        const cv = getSpriteCanvas(fr, "TINT", birdTint, birdTint, birdTint, birdTint, birdTint);
+        ctx.drawImage(cv, o.x|0, o.y|0);
+      }
+
+      if (options.hitboxes) {
+        ctx.strokeStyle = "#ff2d2d";
+        ctx.strokeRect(o.x|0, o.y|0, o.w|0, o.h|0);
+      }
+    }
+
+    // fossils
+    for (const f of fossils) {
+      if (f.taken) continue;
+      const bob = Math.sin((performance.now()/1000)*6 + f.spin) * 1.2;
+      const cv = getSpriteCanvas(SPR.fossil, "DINO", "#000000", "#000000", "#000000", pal.accent, pal.accent);
+      ctx.drawImage(cv, f.x|0, (f.y + bob)|0);
+    }
+
+    // particles
+    if (options.particles) {
+      for (const p of particles) {
+        const life = 1 - (p.t / p.life);
+        ctx.globalAlpha = clamp(life, 0, 1);
+        ctx.fillStyle = (p.kind === "spark") ? pal.accent : lerpColor(pal.ground2, pal.bg2, 0.35);
+        ctx.fillRect((p.x|0), (p.y|0), (p.s|0)||1, (p.s|0)||1);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // player sprite pick
+    let spr;
+    if (!running && !gameOver) spr = SPR.dinoRun0;
+    else if (!player.onGround) spr = SPR.dinoJump;
+    else if (player.duck) spr = (player.frame===0) ? SPR.dinoDuck0 : SPR.dinoDuck1;
+    else spr = (player.frame===0) ? SPR.dinoRun0 : SPR.dinoRun1;
+
+    const jumping = running && !player.onGround;
+    const stretch = jumping ? 1.06 : 1.0;
+    const squash = (!jumping && running && !paused) ? 0.98 : 1.0;
+
+    const dinoCv = getSpriteCanvas(spr, "DINO",
+      dinoColors.outline, dinoColors.body, dinoColors.shade, dinoColors.acc, dinoColors.hi
+    );
+
+    ctx.save();
+    ctx.translate((player.x|0), (player.y|0));
+    ctx.scale(squash, stretch);
+    ctx.drawImage(dinoCv, 0, 0);
+    ctx.restore();
+
+    // HUD
+    const score = getScore();
+    const intro = easeOutCubic(uiIntroT);
+    const hudY = (6 - (1-intro)*16)|0;
+
+    if (combo > 0 && running && !gameOver) {
+      ctx.fillStyle = pal.accent;
+      const barW = clamp(combo * 7, 0, 140);
+      ctx.fillRect(10, hudY+6, barW|0, 3);
+      drawText(10, hudY+12, `COMBO X${combo}`, pal.fg, 2, 1);
+    }
+
+    drawText(W-190, hudY, `HI ${fmtScore(hiScore)}`, pal.fg, 2, 1);
+
+    const pop = scorePopT>0 ? (1 + 0.14*Math.sin((scorePopT/0.45)*Math.PI)) : 1;
+    ctx.save();
+    ctx.translate(W-110, hudY+14);
+    ctx.scale(pop, pop);
+    ctx.translate(-(W-110), -(hudY+14));
+    drawText(W-190, hudY+14, `SCORE ${fmtScore(score)}`, pal.fg, 2, 1);
+    ctx.restore();
+
+    drawText(10, H-18, `${pal.name} / ${sk.name}`, pal.fg, 2, 1);
+
+    if (skinToastT > 0) {
+      const t = 1 - (skinToastT / 1.25);
+      const s = easeOutCubic(clamp(t*1.1,0,1));
+      const slide = (1 - s) * 18;
+      const a = clamp(s*1.1,0,1) * clamp((1-t)*1.9,0,1);
+
+      ctx.globalAlpha = a;
+      const msg = `SKIN: ${sk.name}`;
+      const wpx = measureTextPx(msg, 2, 1) + 18;
+      const bx = ((W - wpx)/2)|0;
+      const by = (24 + slide)|0;
+
+      ctx.fillStyle = pal.accent;
+      ctx.fillRect(bx-3, by-3, wpx+6, 18);
+      ctx.fillStyle = pal.bg1;
+      ctx.fillRect(bx, by, wpx, 12);
+      drawText(bx+8, by+2, msg, pal.fg, 2, 1);
+      ctx.globalAlpha = 1;
+    }
+
+    // overlay prompts
+    if (!running && !gameOver) {
+      const msg = "PRESS SPACE";
+      drawText(((W - measureTextPx(msg, 3, 1))/2)|0, (H/2-12)|0, msg, pal.fg, 3, 1);
+      drawText(((W - measureTextPx("K: SKIN",2,1))/2)|0, (H/2+10)|0, "K: SKIN", pal.accent, 2, 1);
+    }
+    if (paused && !gameOver) {
+      ctx.globalAlpha = 0.45;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0,0,W,H);
+      ctx.globalAlpha = 1;
+      drawText(((W - measureTextPx("PAUSED", 3, 1))/2)|0, (H/2-10)|0, "PAUSED", pal.fg, 3, 1);
+      drawText(((W - measureTextPx("P TO RESUME",2,1))/2)|0, (H/2+12)|0, "P TO RESUME", pal.accent, 2, 1);
+    }
+    if (gameOver) {
+      ctx.globalAlpha = 0.45;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0,0,W,H);
+      ctx.globalAlpha = 1;
+      drawText(((W - measureTextPx("GAME OVER", 3, 1))/2)|0, (H/2-14)|0, "GAME OVER", pal.fg, 3, 1);
+      drawText(((W - measureTextPx("R TO RESTART",2,1))/2)|0, (H/2+10)|0, "R TO RESTART", pal.accent, 2, 1);
+    }
+
+    // vignette
+    if (options.vignette) {
+      ctx.globalAlpha = 0.20;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0,0,W,3);
+      ctx.fillRect(0,H-3,W,3);
+      ctx.fillRect(0,0,3,H);
+      ctx.fillRect(W-3,0,3,H);
+      ctx.globalAlpha = 1;
+    }
+
+    // present to responsive canvas
+    present();
+  }
+
+  // -----------------------------
+  // Main loop
+  // -----------------------------
+  let last = performance.now();
+  let acc = 0;
+
+  function tick(t) {
+    const dt = clamp((t - last) / 1000, 0, 0.1);
+    last = t;
+
+    if (running && !paused && !gameOver) {
+      acc += dt;
+      while (acc >= FIXED_DT) {
+        update(FIXED_DT);
+        acc -= FIXED_DT;
+      }
+    } else {
+      updatePalette(dt, 0);
+      uiIntroT = clamp(uiIntroT + dt * 1.2, 0, 1);
+      if (skinToastT > 0) skinToastT = Math.max(0, skinToastT - dt);
+      if (scorePopT > 0) scorePopT = Math.max(0, scorePopT - dt);
+    }
+
+    render(acc / FIXED_DT);
+    requestAnimationFrame(tick);
+  }
+
+  // boot
+  restart();
+  requestAnimationFrame((t) => { last = t; requestAnimationFrame(tick); });
+
+})();
+</script>
+</body>
+</html>
+
